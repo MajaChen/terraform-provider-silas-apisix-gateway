@@ -7,7 +7,10 @@ require (
 	github.com/hashicorp/terraform-plugin-go v0.28.0
 	github.com/hashicorp/terraform-plugin-log v0.9.0
 	github.com/hashicorp/terraform-plugin-testing v1.13.2
+	silas.com/ssf-terraform/apisix-client v0.0.0
 )
+
+replace silas.com/ssf-terraform/apisix-client v0.0.0 => D:\go\silas-apisix-client
 
 require (
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
