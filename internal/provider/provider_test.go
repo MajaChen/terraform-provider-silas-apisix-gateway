@@ -11,11 +11,23 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/echoprovider"
 )
 
+const (
+	// providerConfig is a shared configuration to combine with the actual
+	// test configuration so the HashiCups client is properly configured.
+	// It is also possible to use the HASHICUPS_ environment variables instead,
+	// such as updating the Makefile and running the testing through that tool.
+	providerConfig = `
+provider "apisix" {
+  env = "local"
+}
+`
+)
+
 // testAccProtoV6ProviderFactories is used to instantiate a provider during acceptance testing.
 // The factory function is called for each Terraform CLI command to create a provider
 // server that the CLI can connect to and interact with.
 var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
-	"scaffolding": providerserver.NewProtocol6WithError(New("test")()),
+	"apisix": providerserver.NewProtocol6WithError(New("test")()),
 }
 
 // testAccProtoV6ProviderFactoriesWithEcho includes the echo provider alongside the scaffolding provider.

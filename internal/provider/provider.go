@@ -5,7 +5,9 @@ package provider
 
 import (
 	"context"
-	"net/http"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"os"
+	"silas.com/ssf-terraform/apisix-client/api"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
@@ -16,77 +18,97 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// Ensure ScaffoldingProvider satisfies various provider interfaces.
-var _ provider.Provider = &ScaffoldingProvider{}
-var _ provider.ProviderWithFunctions = &ScaffoldingProvider{}
-var _ provider.ProviderWithEphemeralResources = &ScaffoldingProvider{}
+// Ensure ApisixGatewayProvider satisfies various provider interfaces.
+var _ provider.Provider = &ApisixGatewayProvider{}
+var _ provider.ProviderWithFunctions = &ApisixGatewayProvider{}
+var _ provider.ProviderWithEphemeralResources = &ApisixGatewayProvider{}
 
-// ScaffoldingProvider defines the provider implementation.
-type ScaffoldingProvider struct {
+// ApisixGatewayProvider defines the provider implementation.
+type ApisixGatewayProvider struct {
 	// version is set to the provider version on release, "dev" when the
 	// provider is built and ran locally, and "test" when running acceptance
 	// testing.
 	version string
 }
 
-// ScaffoldingProviderModel describes the provider data model.
-type ScaffoldingProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
+// ApisixGatewayProviderModel describes the provider data model.
+type ApisixGatewayProviderModel struct {
+	Env types.String `tfsdk:"env"`
 }
 
-func (p *ScaffoldingProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
-	resp.TypeName = "scaffolding"
+func (p *ApisixGatewayProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
+	resp.TypeName = "apisix"
 	resp.Version = p.version
 }
 
-func (p *ScaffoldingProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
+func (p *ApisixGatewayProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
-			"endpoint": schema.StringAttribute{
-				MarkdownDescription: "Example provider attribute",
+			"env": schema.StringAttribute{
+				MarkdownDescription: "apisix gateway running env, like dev,uat",
 				Optional:            true,
 			},
 		},
 	}
 }
 
-func (p *ScaffoldingProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-	var data ScaffoldingProviderModel
-
+func (p *ApisixGatewayProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	var data ApisixGatewayProviderModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	host, ok := os.LookupEnv(api.ApisixHost)
+	if !ok || host == "" {
+		resp.Diagnostics.AddError(
+			"Env 'APISIX_HOST' not set",
+			"User must set env 'APISIX_HOST', it represent the addr of apisix gateway.",
+		)
+	}
+	key, ok := os.LookupEnv(api.ApisixKey)
+	if !ok || key == "" {
+		resp.Diagnostics.AddError(
+			"Env 'APISIX_KEY' not set",
+			"User must set env 'APISIX_KEY', it contains the authentication info of apisix gateway.",
+		)
+	}
 
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Configuration values are now available.
-	// if data.Endpoint.IsNull() { /* ... */ }
+	ctx = tflog.SetField(ctx, "apisix_gateway_env", data.Env)
+	ctx = tflog.SetField(ctx, "apisix_gateway_host", host)
+	ctx = tflog.SetField(ctx, "apisix_gateway_key", key)
+	ctx = tflog.MaskFieldValuesWithFieldKeys(ctx, "apisix_gateway_key")
 
-	// Example client configuration for data sources and resources
-	client := http.DefaultClient
+	client := api.NewApisixClient()
 	resp.DataSourceData = client
 	resp.ResourceData = client
+
+	tflog.Info(ctx, "Configured Apisix Client", map[string]any{"success": true})
 }
 
-func (p *ScaffoldingProvider) Resources(ctx context.Context) []func() resource.Resource {
+func (p *ApisixGatewayProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
-		NewExampleResource,
+		NewRouteResource,
 	}
 }
 
-func (p *ScaffoldingProvider) EphemeralResources(ctx context.Context) []func() ephemeral.EphemeralResource {
+func (p *ApisixGatewayProvider) EphemeralResources(ctx context.Context) []func() ephemeral.EphemeralResource {
 	return []func() ephemeral.EphemeralResource{
 		NewExampleEphemeralResource,
 	}
 }
 
-func (p *ScaffoldingProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
+func (p *ApisixGatewayProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewExampleDataSource,
 	}
 }
 
-func (p *ScaffoldingProvider) Functions(ctx context.Context) []func() function.Function {
+func (p *ApisixGatewayProvider) Functions(ctx context.Context) []func() function.Function {
 	return []func() function.Function{
 		NewExampleFunction,
 	}
@@ -94,7 +116,7 @@ func (p *ScaffoldingProvider) Functions(ctx context.Context) []func() function.F
 
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
-		return &ScaffoldingProvider{
+		return &ApisixGatewayProvider{
 			version: version,
 		}
 	}
