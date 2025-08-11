@@ -6,6 +6,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"silas.com/ssf-terraform/apisix-client/api"
 	"silas.com/ssf-terraform/apisix-client/model"
 
@@ -31,36 +33,35 @@ type RouteResource struct {
 
 // RouteResourceModel describes the resource data model.
 type RouteResourceModel struct {
-	ID         *string                `tfsdk:"id"`
+	ID         types.String           `tfsdk:"id"`
 	Uris       []string               `tfsdk:"uris"`
-	UpstreamId *string                `tfsdk:"upstream_id"`
+	UpstreamId types.String           `tfsdk:"upstream_id"`
 	Plugins    *Plugins               `tfsdk:"plugins"`
-	Name       *string                `tfsdk:"name"`
-	Desc       *string                `tfsdk:"desc"`
+	Name       types.String           `tfsdk:"name"`
+	Desc       types.String           `tfsdk:"desc"`
 	Hosts      []string               `tfsdk:"hosts"`
 	Methods    []string               `tfsdk:"methods"`
-	Priority   *int                   `tfsdk:"priority"`
+	Priority   types.Int32            `tfsdk:"priority"`
 	Vars       [][]interface{}        `tfsdk:"vars"`
 	Labels     map[string]interface{} `tfsdk:"labels"`
 	Timeout    *Timeout               `tfsdk:"timeout"`
-	Status     *int                   `tfsdk:"status"`
+	Status     types.Int32            `tfsdk:"status"`
 }
 
 type Plugins struct {
-	OpenIdConnectPlugin *OpenIdConnectPlugin `json:"openid_connect"`
+	OpenIdConnectPlugin *OpenIdConnectPlugin `tfsdk:"openid_connect"`
 }
 
 type OpenIdConnectPlugin struct {
 	ClientId       string   `tfsdk:"client_id"`
-	ClientSecret   string   `tfsdk:"client_secret"`
 	Discovery      string   `tfsdk:"discovery"`
 	RequiredScopes []string `tfsdk:"required_scopes"`
 }
 
 type Timeout struct {
-	Connect int `json:"connect"`
-	Send    int `json:"send"`
-	Read    int `json:"read"`
+	Connect types.Int64 `tfsdk:"connect"`
+	Send    types.Int64 `tfsdk:"send"`
+	Read    types.Int64 `tfsdk:"read"`
 }
 
 func (r *RouteResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -76,6 +77,9 @@ func (r *RouteResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Apisix gateway route ID",
 				Required:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"uris": schema.ListAttribute{
 				ElementType:         types.StringType,
@@ -93,10 +97,9 @@ func (r *RouteResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 							"client_id": schema.StringAttribute{
 								MarkdownDescription: "Client ID",
 								Optional:            true,
-							},
-							"client_secret": schema.StringAttribute{
-								MarkdownDescription: "Client Secret",
-								Optional:            true,
+								PlanModifiers: []planmodifier.String{
+									stringplanmodifier.UseStateForUnknown(),
+								},
 							},
 							"discovery": schema.StringAttribute{
 								MarkdownDescription: "Discovery endpoint",
@@ -193,6 +196,50 @@ func (r *RouteResource) Configure(ctx context.Context, req resource.ConfigureReq
 	r.client = client
 }
 
+func buildTimeout(input *Timeout) *model.Timeout {
+	timeout := model.Timeout{}
+	if input == nil {
+		timeout.Connect = 5
+		timeout.Send = 5
+		timeout.Read = 5
+	} else {
+		timeout.Connect = int(input.Connect.ValueInt64())
+		timeout.Send = int(input.Send.ValueInt64())
+		timeout.Read = int(input.Read.ValueInt64())
+	}
+
+	return &timeout
+}
+
+func fetchClientSecret(clientId string) (string, error) {
+	return "client_secret", nil
+}
+
+func buildPlugins(input *Plugins) (*model.Plugins, error) {
+	if input == nil || input.OpenIdConnectPlugin == nil {
+		return nil, nil
+	}
+	secret, err := fetchClientSecret(input.OpenIdConnectPlugin.ClientId)
+	if err != nil {
+		return nil, err
+	}
+	return &model.Plugins{
+		OpenIdConnectPlugin: &model.OpenIdConnectPlugin{
+			ClientId:              input.OpenIdConnectPlugin.ClientId,
+			ClientSecret:          secret,
+			Discovery:             input.OpenIdConnectPlugin.Discovery,
+			RequiredScopes:        input.OpenIdConnectPlugin.RequiredScopes,
+			BearerOnly:            true,
+			UseJwks:               true,
+			JwkExpiresIn:          600,
+			AudienceRequired:      true,
+			Audience:              "aud",
+			AudienceMatchClientId: true,
+			Realm:                 "silas-apisix-gateway",
+		},
+	}, nil
+}
+
 func (r *RouteResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data RouteResourceModel
 	// Read Terraform plan data into the model
@@ -202,40 +249,30 @@ func (r *RouteResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	// Generate API request body from plan
-	authPlugin := model.OpenIdConnectPlugin{
-		ClientId:              data.Plugins.OpenIdConnectPlugin.ClientId,
-		ClientSecret:          data.Plugins.OpenIdConnectPlugin.ClientSecret,
-		Discovery:             data.Plugins.OpenIdConnectPlugin.Discovery,
-		RequiredScopes:        data.Plugins.OpenIdConnectPlugin.RequiredScopes,
-		BearerOnly:            true,
-		UseJwks:               true,
-		JwkExpiresIn:          600,
-		AudienceRequired:      true,
-		Audience:              "aud",
-		AudienceMatchClientId: true,
-		Realm:                 "silas-apisix-gateway",
+	plugins, err := buildPlugins(data.Plugins)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error creating plugins",
+			"Could not create plugin, unexpected error: "+err.Error(),
+		)
+		return
 	}
+
+	// Generate API request body from plan
 	route := &model.Route{
-		ID:         data.ID,
+		ID:         data.ID.ValueString(),
 		Uris:       data.Uris,
-		UpstreamId: data.UpstreamId,
-		Plugins: &model.Plugins{
-			OpenIdConnectPlugin: &authPlugin,
-		},
-		Name:     data.Name,
-		Desc:     data.Desc,
-		Hosts:    data.Hosts,
-		Methods:  data.Methods,
-		Priority: data.Priority,
-		Vars:     data.Vars,
-		Labels:   data.Labels,
-		Timeout: &model.Timeout{
-			Connect: data.Timeout.Connect,
-			Send:    data.Timeout.Send,
-			Read:    data.Timeout.Read,
-		},
-		Status: data.Status,
+		UpstreamId: data.UpstreamId.ValueString(),
+		Plugins:    plugins,
+		Name:       data.Name.ValueString(),
+		Desc:       data.Desc.ValueString(),
+		Hosts:      data.Hosts,
+		Methods:    data.Methods,
+		Priority:   int(data.Priority.ValueInt32()),
+		Vars:       data.Vars,
+		Labels:     data.Labels,
+		Timeout:    buildTimeout(data.Timeout),
+		Status:     1,
 	}
 
 	createdRoute, err := r.client.CreateRoute(route)
@@ -249,32 +286,31 @@ func (r *RouteResource) Create(ctx context.Context, req resource.CreateRequest, 
 
 	// Update the plan with create API response and save it to .tfstate file
 	// API response reflects the latest state of the route
-	data.ID = createdRoute.ID
+	data.ID = types.StringValue(createdRoute.ID)
 	data.Uris = createdRoute.Uris
-	data.UpstreamId = createdRoute.UpstreamId
+	data.UpstreamId = types.StringValue(createdRoute.UpstreamId)
 	data.Plugins = &Plugins{
 		OpenIdConnectPlugin: &OpenIdConnectPlugin{
 			ClientId:       createdRoute.Plugins.OpenIdConnectPlugin.ClientId,
-			ClientSecret:   createdRoute.Plugins.OpenIdConnectPlugin.ClientSecret,
 			Discovery:      createdRoute.Plugins.OpenIdConnectPlugin.Discovery,
 			RequiredScopes: createdRoute.Plugins.OpenIdConnectPlugin.RequiredScopes,
 		},
 	}
-	data.Name = createdRoute.Name
-	data.Desc = createdRoute.Desc
+	data.Name = types.StringValue(createdRoute.Name)
+	data.Desc = types.StringValue(createdRoute.Desc)
 	data.Hosts = createdRoute.Hosts
 	data.Methods = createdRoute.Methods
-	data.Priority = createdRoute.Priority
+	data.Priority = types.Int32Value(int32(createdRoute.Priority))
 	data.Vars = createdRoute.Vars
 	data.Labels = createdRoute.Labels
 	data.Timeout = &Timeout{
-		Connect: createdRoute.Timeout.Connect,
-		Send:    createdRoute.Timeout.Send,
-		Read:    createdRoute.Timeout.Read,
+		Connect: types.Int64Value(int64(createdRoute.Timeout.Connect)),
+		Send:    types.Int64Value(int64(createdRoute.Timeout.Send)),
+		Read:    types.Int64Value(int64(createdRoute.Timeout.Read)),
 	}
-	data.Status = createdRoute.Status
+	data.Status = types.Int32Value(int32(createdRoute.Status))
 
-	tflog.Trace(ctx, "created a resource "+data.ID)
+	tflog.Trace(ctx, "created a resource "+data.ID.ValueString())
 	// Save data into Terraform state
 	diags = resp.State.Set(ctx, &data)
 	resp.Diagnostics.Append(diags...)
@@ -289,7 +325,7 @@ func (r *RouteResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
-	route, err := r.client.GetRouteById(data.ID)
+	route, err := r.client.GetRouteById(data.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting route",
@@ -298,30 +334,29 @@ func (r *RouteResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
-	data.ID = route.ID
+	data.ID = types.StringValue(route.ID)
 	data.Uris = route.Uris
-	data.UpstreamId = route.UpstreamId
+	data.UpstreamId = types.StringValue(route.UpstreamId)
 	data.Plugins = &Plugins{
 		OpenIdConnectPlugin: &OpenIdConnectPlugin{
 			ClientId:       route.Plugins.OpenIdConnectPlugin.ClientId,
-			ClientSecret:   route.Plugins.OpenIdConnectPlugin.ClientSecret,
 			Discovery:      route.Plugins.OpenIdConnectPlugin.Discovery,
 			RequiredScopes: route.Plugins.OpenIdConnectPlugin.RequiredScopes,
 		},
 	}
-	data.Name = route.Name
-	data.Desc = route.Desc
+	data.Name = types.StringValue(route.Name)
+	data.Desc = types.StringValue(route.Desc)
 	data.Hosts = route.Hosts
 	data.Methods = route.Methods
-	data.Priority = route.Priority
+	data.Priority = types.Int32Value(int32(route.Priority))
 	data.Vars = route.Vars
 	data.Labels = route.Labels
 	data.Timeout = &Timeout{
-		Connect: route.Timeout.Connect,
-		Send:    route.Timeout.Send,
-		Read:    route.Timeout.Read,
+		Connect: types.Int64Value(int64(route.Timeout.Connect)),
+		Send:    types.Int64Value(int64(route.Timeout.Send)),
+		Read:    types.Int64Value(int64(route.Timeout.Read)),
 	}
-	data.Status = route.Status
+	data.Status = types.Int32Value(int32(route.Status))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -329,39 +364,35 @@ func (r *RouteResource) Read(ctx context.Context, req resource.ReadRequest, resp
 func (r *RouteResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data RouteResourceModel
 	// Read Terraform prior state data into the model
-	diags := req.State.Get(ctx, &data)
+	diags := req.Plan.Get(ctx, &data)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	// Generate API request body from plan
-	authPlugin := model.OpenIdConnectPlugin{
-		ClientId:       data.Plugins.OpenIdConnectPlugin.ClientId,
-		ClientSecret:   data.Plugins.OpenIdConnectPlugin.ClientSecret,
-		Discovery:      data.Plugins.OpenIdConnectPlugin.Discovery,
-		RequiredScopes: data.Plugins.OpenIdConnectPlugin.RequiredScopes,
+	plugins, err := buildPlugins(data.Plugins)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error creating plugins",
+			"Could not create plugin, unexpected error: "+err.Error(),
+		)
+		return
 	}
 	route := &model.Route{
-		ID:         data.ID,
+		ID:         data.ID.ValueString(),
 		Uris:       data.Uris,
-		UpstreamId: data.UpstreamId,
-		Plugins: &model.Plugins{
-			OpenIdConnectPlugin: &authPlugin,
-		},
-		Name:     data.Name,
-		Desc:     data.Desc,
-		Hosts:    data.Hosts,
-		Methods:  data.Methods,
-		Priority: data.Priority,
-		Vars:     data.Vars,
-		Labels:   data.Labels,
-		Timeout: &model.Timeout{
-			Connect: data.Timeout.Connect,
-			Send:    data.Timeout.Send,
-			Read:    data.Timeout.Read,
-		},
-		Status: data.Status,
+		UpstreamId: data.UpstreamId.ValueString(),
+		Plugins:    plugins,
+		Name:       data.Name.ValueString(),
+		Desc:       data.Desc.ValueString(),
+		Hosts:      data.Hosts,
+		Methods:    data.Methods,
+		Priority:   int(data.Priority.ValueInt32()),
+		Vars:       data.Vars,
+		Labels:     data.Labels,
+		Timeout:    buildTimeout(data.Timeout),
+		Status:     int(data.Status.ValueInt32()),
 	}
 
 	updatedRoute, err := r.client.UpdateRoute(route)
@@ -375,32 +406,31 @@ func (r *RouteResource) Update(ctx context.Context, req resource.UpdateRequest, 
 
 	// Update the plan with create API response and save it to .tfstate file
 	// API response reflects the latest state of the route
-	data.ID = updatedRoute.ID
+	data.ID = types.StringValue(updatedRoute.ID)
 	data.Uris = updatedRoute.Uris
-	data.UpstreamId = updatedRoute.UpstreamId
+	data.UpstreamId = types.StringValue(updatedRoute.UpstreamId)
 	data.Plugins = &Plugins{
 		OpenIdConnectPlugin: &OpenIdConnectPlugin{
 			ClientId:       updatedRoute.Plugins.OpenIdConnectPlugin.ClientId,
-			ClientSecret:   updatedRoute.Plugins.OpenIdConnectPlugin.ClientSecret,
 			Discovery:      updatedRoute.Plugins.OpenIdConnectPlugin.Discovery,
 			RequiredScopes: updatedRoute.Plugins.OpenIdConnectPlugin.RequiredScopes,
 		},
 	}
-	data.Name = updatedRoute.Name
-	data.Desc = updatedRoute.Desc
+	data.Name = types.StringValue(updatedRoute.Name)
+	data.Desc = types.StringValue(updatedRoute.Desc)
 	data.Hosts = updatedRoute.Hosts
 	data.Methods = updatedRoute.Methods
-	data.Priority = updatedRoute.Priority
+	data.Priority = types.Int32Value(int32(updatedRoute.Priority))
 	data.Vars = updatedRoute.Vars
 	data.Labels = updatedRoute.Labels
 	data.Timeout = &Timeout{
-		Connect: updatedRoute.Timeout.Connect,
-		Send:    updatedRoute.Timeout.Send,
-		Read:    updatedRoute.Timeout.Read,
+		Connect: types.Int64Value(int64(updatedRoute.Timeout.Connect)),
+		Send:    types.Int64Value(int64(updatedRoute.Timeout.Send)),
+		Read:    types.Int64Value(int64(updatedRoute.Timeout.Read)),
 	}
-	data.Status = updatedRoute.Status
+	data.Status = types.Int32Value(int32(updatedRoute.Status))
 
-	tflog.Trace(ctx, "created a resource "+data.ID)
+	tflog.Trace(ctx, "created a resource "+data.ID.ValueString())
 	// Save data into Terraform state
 	diags = resp.State.Set(ctx, &data)
 	resp.Diagnostics.Append(diags...)
@@ -415,7 +445,7 @@ func (r *RouteResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		return
 	}
 
-	err := r.client.DeleteRouteById(data.ID)
+	err := r.client.DeleteRouteById(data.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error deleting route",
