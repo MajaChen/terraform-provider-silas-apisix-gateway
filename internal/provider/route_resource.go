@@ -18,6 +18,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
+const (
+	defaultConnectTimeout = 10
+	defaultSendTimeout    = 10
+	defaultReadTimeout    = 10
+)
+
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ resource.Resource = &RouteResource{}
 var _ resource.ResourceWithImportState = &RouteResource{}
@@ -33,19 +39,19 @@ type RouteResource struct {
 
 // RouteResourceModel describes the resource data model.
 type RouteResourceModel struct {
-	ID         types.String           `tfsdk:"id"`
-	Uris       []string               `tfsdk:"uris"`
-	UpstreamId types.String           `tfsdk:"upstream_id"`
-	Plugins    *Plugins               `tfsdk:"plugins"`
-	Name       types.String           `tfsdk:"name"`
-	Desc       types.String           `tfsdk:"desc"`
-	Hosts      []string               `tfsdk:"hosts"`
-	Methods    []string               `tfsdk:"methods"`
-	Priority   types.Int32            `tfsdk:"priority"`
-	Vars       [][]interface{}        `tfsdk:"vars"`
-	Labels     map[string]interface{} `tfsdk:"labels"`
-	Timeout    *Timeout               `tfsdk:"timeout"`
-	Status     types.Int32            `tfsdk:"status"`
+	ID         types.String      `tfsdk:"id"`
+	Uris       []string          `tfsdk:"uris"`
+	UpstreamId types.String      `tfsdk:"upstream_id"`
+	Plugins    *Plugins          `tfsdk:"plugins"`
+	Name       types.String      `tfsdk:"name"`
+	Desc       types.String      `tfsdk:"desc"`
+	Hosts      []string          `tfsdk:"hosts"`
+	Methods    []string          `tfsdk:"methods"`
+	Priority   types.Int32       `tfsdk:"priority"`
+	Vars       [][]string        `tfsdk:"vars"`
+	Labels     map[string]string `tfsdk:"labels"`
+	Timeout    *Timeout          `tfsdk:"timeout"`
+	Status     types.Int32       `tfsdk:"status"`
 }
 
 type Plugins struct {
@@ -132,9 +138,9 @@ func (r *RouteResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				ElementType:         types.StringType,
 			},
 			"methods": schema.ListAttribute{
+				ElementType:         types.StringType,
 				MarkdownDescription: "Apisix gateway route methods",
 				Optional:            true,
-				ElementType:         types.StringType,
 			},
 			"priority": schema.Int32Attribute{
 				Optional:            true,
@@ -142,10 +148,10 @@ func (r *RouteResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			},
 			"vars": schema.ListAttribute{
 				ElementType: types.ListType{
-					ElemType: types.ObjectType{},
+					ElemType: types.StringType,
 				},
-				Optional:            true,
 				MarkdownDescription: "Apisix gateway route vars",
+				Optional:            true,
 			},
 			"labels": schema.MapAttribute{
 				MarkdownDescription: "Apisix gateway route labels",
@@ -196,12 +202,12 @@ func (r *RouteResource) Configure(ctx context.Context, req resource.ConfigureReq
 	r.client = client
 }
 
-func buildTimeout(input *Timeout) *model.Timeout {
+func buildInfraTimeout(input *Timeout) *model.Timeout {
 	timeout := model.Timeout{}
 	if input == nil {
-		timeout.Connect = 5
-		timeout.Send = 5
-		timeout.Read = 5
+		timeout.Connect = defaultConnectTimeout
+		timeout.Send = defaultSendTimeout
+		timeout.Read = defaultReadTimeout
 	} else {
 		timeout.Connect = int(input.Connect.ValueInt64())
 		timeout.Send = int(input.Send.ValueInt64())
@@ -211,24 +217,50 @@ func buildTimeout(input *Timeout) *model.Timeout {
 	return &timeout
 }
 
+func buildTimeout(timeout *model.Timeout) *Timeout {
+	if timeout == nil {
+		return nil
+	}
+
+	return &Timeout{
+		Connect: types.Int64Value(int64(timeout.Connect)),
+		Send:    types.Int64Value(int64(timeout.Send)),
+		Read:    types.Int64Value(int64(timeout.Read)),
+	}
+}
+
 func fetchClientSecret(clientId string) (string, error) {
 	return "client_secret", nil
 }
 
-func buildPlugins(input *Plugins) (*model.Plugins, error) {
-	if input == nil || input.OpenIdConnectPlugin == nil {
+func buildPlugins(plugins *model.Plugins) *Plugins {
+	if (plugins == nil) || (plugins.OpenIdConnectPlugin == nil) {
+		return &Plugins{}
+	}
+	return &Plugins{
+		OpenIdConnectPlugin: &OpenIdConnectPlugin{
+			ClientId:       plugins.OpenIdConnectPlugin.ClientId,
+			Discovery:      plugins.OpenIdConnectPlugin.Discovery,
+			RequiredScopes: plugins.OpenIdConnectPlugin.RequiredScopes,
+		},
+	}
+}
+
+func buildInfraPlugins(plugins *Plugins) (*model.Plugins, error) {
+	if plugins == nil || plugins.OpenIdConnectPlugin == nil {
 		return nil, nil
 	}
-	secret, err := fetchClientSecret(input.OpenIdConnectPlugin.ClientId)
+	secret, err := fetchClientSecret(plugins.OpenIdConnectPlugin.ClientId)
 	if err != nil {
 		return nil, err
 	}
 	return &model.Plugins{
 		OpenIdConnectPlugin: &model.OpenIdConnectPlugin{
-			ClientId:              input.OpenIdConnectPlugin.ClientId,
-			ClientSecret:          secret,
-			Discovery:             input.OpenIdConnectPlugin.Discovery,
-			RequiredScopes:        input.OpenIdConnectPlugin.RequiredScopes,
+			ClientId:       plugins.OpenIdConnectPlugin.ClientId,
+			ClientSecret:   secret,
+			Discovery:      plugins.OpenIdConnectPlugin.Discovery,
+			RequiredScopes: plugins.OpenIdConnectPlugin.RequiredScopes,
+			// Just set to default value as they are not variable
 			BearerOnly:            true,
 			UseJwks:               true,
 			JwkExpiresIn:          600,
@@ -249,7 +281,7 @@ func (r *RouteResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	plugins, err := buildPlugins(data.Plugins)
+	plugins, err := buildInfraPlugins(data.Plugins)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error creating plugins",
@@ -271,7 +303,7 @@ func (r *RouteResource) Create(ctx context.Context, req resource.CreateRequest, 
 		Priority:   int(data.Priority.ValueInt32()),
 		Vars:       data.Vars,
 		Labels:     data.Labels,
-		Timeout:    buildTimeout(data.Timeout),
+		Timeout:    buildInfraTimeout(data.Timeout),
 		Status:     1,
 	}
 
@@ -289,13 +321,7 @@ func (r *RouteResource) Create(ctx context.Context, req resource.CreateRequest, 
 	data.ID = types.StringValue(createdRoute.ID)
 	data.Uris = createdRoute.Uris
 	data.UpstreamId = types.StringValue(createdRoute.UpstreamId)
-	data.Plugins = &Plugins{
-		OpenIdConnectPlugin: &OpenIdConnectPlugin{
-			ClientId:       createdRoute.Plugins.OpenIdConnectPlugin.ClientId,
-			Discovery:      createdRoute.Plugins.OpenIdConnectPlugin.Discovery,
-			RequiredScopes: createdRoute.Plugins.OpenIdConnectPlugin.RequiredScopes,
-		},
-	}
+	data.Plugins = buildPlugins(createdRoute.Plugins)
 	data.Name = types.StringValue(createdRoute.Name)
 	data.Desc = types.StringValue(createdRoute.Desc)
 	data.Hosts = createdRoute.Hosts
@@ -303,11 +329,7 @@ func (r *RouteResource) Create(ctx context.Context, req resource.CreateRequest, 
 	data.Priority = types.Int32Value(int32(createdRoute.Priority))
 	data.Vars = createdRoute.Vars
 	data.Labels = createdRoute.Labels
-	data.Timeout = &Timeout{
-		Connect: types.Int64Value(int64(createdRoute.Timeout.Connect)),
-		Send:    types.Int64Value(int64(createdRoute.Timeout.Send)),
-		Read:    types.Int64Value(int64(createdRoute.Timeout.Read)),
-	}
+	data.Timeout = buildTimeout(createdRoute.Timeout)
 	data.Status = types.Int32Value(int32(createdRoute.Status))
 
 	tflog.Trace(ctx, "created a resource "+data.ID.ValueString())
@@ -337,13 +359,7 @@ func (r *RouteResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	data.ID = types.StringValue(route.ID)
 	data.Uris = route.Uris
 	data.UpstreamId = types.StringValue(route.UpstreamId)
-	data.Plugins = &Plugins{
-		OpenIdConnectPlugin: &OpenIdConnectPlugin{
-			ClientId:       route.Plugins.OpenIdConnectPlugin.ClientId,
-			Discovery:      route.Plugins.OpenIdConnectPlugin.Discovery,
-			RequiredScopes: route.Plugins.OpenIdConnectPlugin.RequiredScopes,
-		},
-	}
+	data.Plugins = buildPlugins(route.Plugins)
 	data.Name = types.StringValue(route.Name)
 	data.Desc = types.StringValue(route.Desc)
 	data.Hosts = route.Hosts
@@ -351,11 +367,7 @@ func (r *RouteResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	data.Priority = types.Int32Value(int32(route.Priority))
 	data.Vars = route.Vars
 	data.Labels = route.Labels
-	data.Timeout = &Timeout{
-		Connect: types.Int64Value(int64(route.Timeout.Connect)),
-		Send:    types.Int64Value(int64(route.Timeout.Send)),
-		Read:    types.Int64Value(int64(route.Timeout.Read)),
-	}
+	data.Timeout = buildTimeout(route.Timeout)
 	data.Status = types.Int32Value(int32(route.Status))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -371,7 +383,7 @@ func (r *RouteResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	// Generate API request body from plan
-	plugins, err := buildPlugins(data.Plugins)
+	plugins, err := buildInfraPlugins(data.Plugins)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error creating plugins",
@@ -391,7 +403,7 @@ func (r *RouteResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		Priority:   int(data.Priority.ValueInt32()),
 		Vars:       data.Vars,
 		Labels:     data.Labels,
-		Timeout:    buildTimeout(data.Timeout),
+		Timeout:    buildInfraTimeout(data.Timeout),
 		Status:     int(data.Status.ValueInt32()),
 	}
 
@@ -409,13 +421,7 @@ func (r *RouteResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	data.ID = types.StringValue(updatedRoute.ID)
 	data.Uris = updatedRoute.Uris
 	data.UpstreamId = types.StringValue(updatedRoute.UpstreamId)
-	data.Plugins = &Plugins{
-		OpenIdConnectPlugin: &OpenIdConnectPlugin{
-			ClientId:       updatedRoute.Plugins.OpenIdConnectPlugin.ClientId,
-			Discovery:      updatedRoute.Plugins.OpenIdConnectPlugin.Discovery,
-			RequiredScopes: updatedRoute.Plugins.OpenIdConnectPlugin.RequiredScopes,
-		},
-	}
+	data.Plugins = buildPlugins(updatedRoute.Plugins)
 	data.Name = types.StringValue(updatedRoute.Name)
 	data.Desc = types.StringValue(updatedRoute.Desc)
 	data.Hosts = updatedRoute.Hosts
@@ -423,11 +429,7 @@ func (r *RouteResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	data.Priority = types.Int32Value(int32(updatedRoute.Priority))
 	data.Vars = updatedRoute.Vars
 	data.Labels = updatedRoute.Labels
-	data.Timeout = &Timeout{
-		Connect: types.Int64Value(int64(updatedRoute.Timeout.Connect)),
-		Send:    types.Int64Value(int64(updatedRoute.Timeout.Send)),
-		Read:    types.Int64Value(int64(updatedRoute.Timeout.Read)),
-	}
+	data.Timeout = buildTimeout(updatedRoute.Timeout)
 	data.Status = types.Int32Value(int32(updatedRoute.Status))
 
 	tflog.Trace(ctx, "created a resource "+data.ID.ValueString())

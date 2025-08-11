@@ -36,6 +36,7 @@ resource "apisix_route" "ssf-java-sdk-springboot3-demo-dynLoggingLevel" {
     desc = "ssf-java-sdk-springboot3-demo dynLoggingLevel"
     methods = ["GET", "POST"]
     priority = 10
+    vars = [["http_user", "==", "ios"]]
     timeout = {
       connect = 10
       send = 10
