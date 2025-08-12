@@ -6,10 +6,10 @@ package main
 import (
 	"context"
 	"flag"
+	"github.com/hashicorp/terraform-provider-apisix-gateway/internal/provider"
 	"log"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"github.com/hashicorp/terraform-provider-scaffolding-framework/internal/provider"
 )
 
 var (
@@ -29,7 +29,7 @@ func main() {
 
 	opts := providerserver.ServeOpts{
 		// Will be overwritten by -plugin-dir param
-		Address: "registry.terraform.io/silas/apisix-gateway",
+		Address: "silas.com/ssf/apisix-gateway",
 		Debug:   debug,
 	}
 
