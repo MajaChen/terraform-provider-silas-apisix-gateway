@@ -93,6 +93,7 @@ func (p *ApisixGatewayProvider) Configure(ctx context.Context, req provider.Conf
 func (p *ApisixGatewayProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewRouteResource,
+		NewUpstreamResource,
 	}
 }
 

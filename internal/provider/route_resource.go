@@ -77,7 +77,7 @@ func (r *RouteResource) Metadata(ctx context.Context, req resource.MetadataReque
 func (r *RouteResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		// This description is used by the documentation generator and the language server.
-		MarkdownDescription: "Example resource",
+		MarkdownDescription: "route resource",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -132,7 +132,7 @@ func (r *RouteResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				MarkdownDescription: "Apisix gateway route desc",
 				Optional:            true,
 			},
-			"hosts": schema.ListAttribute{
+			"hosts": schema.MapAttribute{
 				MarkdownDescription: "Apisix gateway route hosts",
 				Optional:            true,
 				ElementType:         types.StringType,
@@ -375,7 +375,7 @@ func (r *RouteResource) Read(ctx context.Context, req resource.ReadRequest, resp
 
 func (r *RouteResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data RouteResourceModel
-	// Read Terraform prior state data into the model
+	// Read Terraform plan data into the model
 	diags := req.Plan.Get(ctx, &data)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
